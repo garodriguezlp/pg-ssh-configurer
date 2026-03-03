@@ -43,10 +43,7 @@ public class PgSshConfigurer implements Runnable {
     private static final Logger LOG = Logger.getLogger(PgSshConfigurer.class.getName());
 
     @Inject
-    SshManager sshManager;
-
-    @Inject
-    ConfigFileManager configFileManager;
+    ConfigurationOrchestrationService orchestrationService;
 
     @ConfigProperty(name = "app.greeting.message")
     String greetingMessage;
@@ -103,7 +100,35 @@ public class PgSshConfigurer implements Runnable {
             );
 
             LOG.info(greetingMessage);
+            orchestrationService.orchestrate(sshConfig, configFilePath);
 
+        } catch (Exception e) {
+            LOG.severe("Error during execution: " + e.getMessage());
+            e.printStackTrace();
+            System.exit(1);
+        }
+    }
+}
+
+record SshConnectionConfig(
+    String host,
+    int port,
+    String username,
+    String password
+) {}
+
+@ApplicationScoped
+class ConfigurationOrchestrationService {
+    private static final Logger LOG = Logger.getLogger(PgSshConfigurer.class.getName());
+
+    @Inject
+    SshManager sshManager;
+
+    @Inject
+    ConfigFileManager configFileManager;
+
+    public void orchestrate(SshConnectionConfig sshConfig, String configFilePath) throws IOException {
+        try {
             // 1. Print SSH connection details
             LOG.info("=== SSH Connection Details ===");
             LOG.info("Host: " + sshConfig.host());
@@ -164,23 +189,11 @@ public class PgSshConfigurer implements Runnable {
             LOG.info("=== Restarting Demo Service ===");
             sshManager.restartService("demo-service");
             LOG.info("Demo service restarted successfully");
-
-        } catch (Exception e) {
-            LOG.severe("Error during execution: " + e.getMessage());
-            e.printStackTrace();
-            System.exit(1);
         } finally {
             sshManager.disconnect();
         }
     }
 }
-
-record SshConnectionConfig(
-    String host,
-    int port,
-    String username,
-    String password
-) {}
 
 @ApplicationScoped
 class SshManager {
