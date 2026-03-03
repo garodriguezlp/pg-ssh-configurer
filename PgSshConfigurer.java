@@ -54,28 +54,32 @@ public class PgSshConfigurer implements Runnable {
     @Option(
         names = "--ssh-host",
         description = "SSH host address",
-        defaultValue = "localhost"
+        descriptionKey = "ssh.host",
+        required = true
     )
     String sshHost;
 
     @Option(
         names = "--ssh-port",
         description = "SSH port number (1-65535)",
-        defaultValue = "2223"
+        descriptionKey = "ssh.port",
+        required = true
     )
     int sshPort;
 
     @Option(
         names = "--ssh-user",
         description = "SSH username",
-        defaultValue = "demo"
+        descriptionKey = "ssh.user",
+        required = true
     )
     String sshUsername;
 
     @Option(
         names = "--ssh-password",
         description = "SSH password",
-        defaultValue = "demo",
+        descriptionKey = "ssh.password",
+        required = true,
         interactive = true
     )
     String sshPassword;
@@ -83,7 +87,8 @@ public class PgSshConfigurer implements Runnable {
     @Option(
         names = "--config-file",
         description = "PostgreSQL configuration file path",
-        defaultValue = "/etc/postgresql/16/main/postgresql.conf"
+        descriptionKey = "config.file",
+        required = true
     )
     String configFilePath;
 
