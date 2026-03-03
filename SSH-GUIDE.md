@@ -83,6 +83,62 @@ exit
 
 ---
 
+## Service Management with Systemctl Wrapper
+
+The container includes a custom **systemctl wrapper** that allows you to manage the demo service. This wrapper simulates systemctl functionality and is restricted to work only with sudo.
+
+### Verify the Wrapper Works Only with Sudo
+
+**1. Try to start the service WITHOUT sudo (will fail):**
+
+```bash
+systemctl start demo-service
+```
+
+Expected output:
+```
+This container only supports management of demo-service
+exit status 1
+```
+
+**2. Start the service WITH sudo (successful):**
+
+```bash
+sudo systemctl start demo-service
+```
+
+You'll be prompted for the password: `demo`
+
+Expected output:
+```
+Starting demo-service...
+```
+
+**3. Check service status:**
+
+```bash
+sudo systemctl status demo-service
+```
+
+**4. View service logs:**
+
+```bash
+sudo systemctl restart demo-service
+sudo tail -f /var/log/demo-service.log
+```
+
+**5. Stop the service:**
+
+```bash
+sudo systemctl stop demo-service
+```
+
+### Why Sudo-Only Access?
+
+The systemctl wrapper is configured with restricted permissions to ensure that only authenticated users with elevated privileges can manage services. This prevents unauthorized service modifications and aligns with production Postgres security practices where service restarts require administrative approval.
+
+---
+
 ## Container Management
 
 ### Stop the container
@@ -105,6 +161,34 @@ docker-compose logs -f
 docker-compose down
 docker-compose up -d --build
 ```
+
+---
+
+## Troubleshooting
+
+### SSH Host Key Mismatch
+
+If you encounter an error like:
+
+```
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+```
+
+This occurs when the container host key has changed (e.g., after rebuilding the container). To fix this, remove the old host key entry:
+
+```bash
+ssh-keygen -f '~/.ssh/known_hosts' -R '[localhost]:2223'
+```
+
+Then try connecting again:
+
+```bash
+ssh -p 2223 demo@localhost
+```
+
+You'll be prompted to verify and accept the new host key fingerprint. Type `yes` and press Enter to add it to your `known_hosts` file.
 
 ---
 
