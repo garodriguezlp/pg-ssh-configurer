@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  ubuntu-ssh-demo:
+    build: .
+    container_name: ubuntu-ssh-demo
+    hostname: fake-remote
+    ports:
+      - "2223:22"
+    restart: unless-stopped
