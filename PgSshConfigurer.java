@@ -2,7 +2,7 @@
 //JAVA 17+
 //DEPS io.quarkus.platform:quarkus-bom:3.15.1@pom
 //DEPS io.quarkus:quarkus-picocli
-//DEPS com.hierynomus:sshj:0.38.0
+//DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.15.0
 //RUNTIME_OPTIONS -Djava.util.logging.manager=org.jboss.logmanager.LogManager
 //Q:CONFIG quarkus.banner.enabled=false
 //Q:CONFIG quarkus.log.level=WARN
@@ -13,17 +13,14 @@
 //Q:CONFIG quarkus.log.category."SshManager".level=INFO
 //Q:CONFIG quarkus.log.category."ConfigFileManager".level=INFO
 
-import net.schmizz.sshj.SSHClient;
-import net.schmizz.sshj.connection.channel.direct.Session;
-import net.schmizz.sshj.transport.verification.PromiscuousVerifier;
+import org.apache.camel.CamelContext;
+import org.apache.camel.ProducerTemplate;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
 @Command(name = "pg-ssh-config", mixinStandardHelpOptions = true)
@@ -109,67 +106,46 @@ public class PgSshConfigurer implements Runnable {
 @ApplicationScoped
 class SshManager {
     private static final Logger LOG = Logger.getLogger(SshManager.class.getName());
-    private SSHClient ssh;
+    
+    @Inject
+    CamelContext camelContext;
+    
+    @Inject
+    ProducerTemplate producerTemplate;
+    
+    private String sshEndpoint;
     private String password;
 
     public void connect(String host, int port, String username, String password) throws IOException {
         this.password = password;
-        ssh = new SSHClient();
-        ssh.addHostKeyVerifier(new PromiscuousVerifier());
-        ssh.connect(host, port);
-        ssh.authPassword(username, password);
-        LOG.fine("SSH connection established to " + host + ":" + port);
+        // Build SSH endpoint URI for Apache Camel
+        // Format: ssh://username@host:port?certResource=&useFixedDelay=true&delay=5000&pollCommand=...
+        this.sshEndpoint = String.format("ssh:%s@%s:%d?password=RAW(%s)&timeout=30000", 
+            username, host, port, password);
+        LOG.fine("SSH endpoint configured: ssh:" + username + "@" + host + ":" + port);
     }
 
     public String executeCommand(String command) throws IOException {
-        if (ssh == null || !ssh.isConnected()) {
+        if (sshEndpoint == null) {
             throw new IllegalStateException("SSH not connected");
         }
 
-        try (Session session = ssh.startSession()) {
-            Session.Command cmd = session.exec(command);
-            
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            ByteArrayOutputStream error = new ByteArrayOutputStream();
-            
-            // Read output and error streams
-            byte[] buffer = new byte[1024];
-            int bytesRead;
-            
-            while ((bytesRead = cmd.getInputStream().read(buffer)) != -1) {
-                output.write(buffer, 0, bytesRead);
-            }
-            
-            while ((bytesRead = cmd.getErrorStream().read(buffer)) != -1) {
-                error.write(buffer, 0, bytesRead);
-            }
-            
-            cmd.join(30, TimeUnit.SECONDS);
-            
-            Integer exitStatus = cmd.getExitStatus();
-            String outputStr = output.toString();
-            String errorStr = error.toString();
-            
+        try {
+            // Send command to SSH endpoint and get result
+            String result = producerTemplate.requestBody(sshEndpoint, command, String.class);
             LOG.fine("Command: " + command);
-            LOG.fine("Exit status: " + exitStatus);
-            LOG.fine("Output: " + outputStr);
-            if (!errorStr.isEmpty()) {
-                LOG.fine("Error: " + errorStr);
-            }
-            
-            if (exitStatus != null && exitStatus != 0) {
-                throw new IOException("Command failed with exit code " + exitStatus + 
-                    ". Error: " + errorStr + ". Output: " + outputStr);
-            }
-            
-            return outputStr;
+            LOG.fine("Output: " + result);
+            return result != null ? result : "";
+        } catch (Exception e) {
+            LOG.severe("Command execution failed: " + e.getMessage());
+            throw new IOException("Command execution failed: " + e.getMessage(), e);
         }
     }
 
     public String executeSudoCommand(String command) throws IOException {
         // Use printf to provide password to sudo via stdin for unattended execution
         // Wrap the command in bash -c to ensure the entire command runs with sudo
-        String sudoCommand = String.format("printf '%s\\n' | sudo -S bash -c \"%s\"", 
+        String sudoCommand = String.format("printf '%s\\n' | sudo -S bash -c \"%s\" 2>&1", 
             password, command.replace("\"", "\\\""));
         return executeCommand(sudoCommand);
     }
@@ -182,14 +158,8 @@ class SshManager {
     }
 
     public void disconnect() {
-        if (ssh != null) {
-            try {
-                ssh.disconnect();
-                LOG.fine("SSH connection closed");
-            } catch (IOException e) {
-                LOG.warning("Error disconnecting SSH: " + e.getMessage());
-            }
-        }
+        // Camel manages connections through its lifecycle, no explicit disconnect needed
+        LOG.fine("SSH connection closed (managed by Camel)");
     }
 }
 
