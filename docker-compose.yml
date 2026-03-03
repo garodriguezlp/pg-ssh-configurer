@@ -2,7 +2,9 @@ version: '3.8'
 
 services:
   ubuntu-ssh-demo:
-    build: .
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
     container_name: ubuntu-ssh-demo
     hostname: fake-remote
     ports:
