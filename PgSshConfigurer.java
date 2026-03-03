@@ -91,6 +91,11 @@ public class PgSshConfigurer implements Runnable {
             LOG.info("=== Final Configuration State ===");
             configFileManager.viewFile("/etc/postgresql/16/main/postgresql.conf");
 
+            // 9. Demonstrate systemd service management
+            LOG.info("=== Restarting Demo Service ===");
+            sshManager.restartService("demo-service");
+            LOG.info("Demo service restarted successfully");
+
         } catch (Exception e) {
             LOG.severe("Error during execution: " + e.getMessage());
             e.printStackTrace();
@@ -167,6 +172,13 @@ class SshManager {
         String sudoCommand = String.format("printf '%s\\n' | sudo -S bash -c \"%s\"", 
             password, command.replace("\"", "\\\""));
         return executeCommand(sudoCommand);
+    }
+
+    public void restartService(String serviceName) throws IOException {
+        LOG.info("Restarting service: " + serviceName);
+        String command = "systemctl restart " + serviceName;
+        executeSudoCommand(command);
+        LOG.fine("Service " + serviceName + " restarted successfully");
     }
 
     public void disconnect() {

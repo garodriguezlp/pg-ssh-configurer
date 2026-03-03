@@ -40,6 +40,12 @@ Responsible for:
 - **Add**: Insert new property if not present
 - **Remove**: Delete property from file
 
+### 3. Service Management Abstraction
+Responsible for:
+- **Restart**: Restart a systemd service with sudo (password-prompted)
+- Execute via standard `sudo systemctl restart <service>` command
+- Leverage existing password authentication pipeline
+
 ## Execution Flow
 
 1. Print SSH connection details (host, port, user)
@@ -49,10 +55,20 @@ Responsible for:
 5. Add a new property to the file
 6. Remove a property from the file
 7. Print final configuration state
+8. Restart a systemd service (demo-service) with password-prompted sudo
 
 Properties and file paths are hardcoded for demonstration purposes.
 
 ## Configuration
+
+### Docker Container Setup
+- **Base Image**: Ubuntu 24.04
+- **Init Process**: OpenSSH server (sshd) as container entry point
+- **Service Management**: Custom systemctl wrapper script that simulates systemctl behavior for demo-service management
+- **SSH**: OpenSSH server with password authentication enabled
+- **Demo User**: `demo` with password `demo` and full sudo privileges
+- **Demo Service**: Background process managed by custom systemctl wrapper for testing service restart functionality
+- **Docker Compose**: Standard unprivileged mode with SSH access on port 2223
 
 ### JBang Header
 ```
