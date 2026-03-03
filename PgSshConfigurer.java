@@ -7,6 +7,7 @@
 //DEPS io.quarkus.platform:quarkus-bom:3.15.1@pom
 //DEPS io.quarkus:quarkus-picocli
 //DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.15.0
+//FILES .pg-ssh-config.properties
 
 //Q:CONFIG app.greeting.message=Hello
 
@@ -24,6 +25,7 @@ import org.apache.camel.ProducerTemplate;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.PropertiesDefaultProvider;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
@@ -31,7 +33,11 @@ import java.io.IOException;
 import java.util.logging.Logger;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
-@Command(name = "pg-ssh-config", mixinStandardHelpOptions = true)
+@Command(
+    name = "pg-ssh-config",
+    defaultValueProvider = PropertiesDefaultProvider.class,
+    mixinStandardHelpOptions = true
+)
 public class PgSshConfigurer implements Runnable {
 
     private static final Logger LOG = Logger.getLogger(PgSshConfigurer.class.getName());
