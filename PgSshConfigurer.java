@@ -1,9 +1,15 @@
 //usr/bin/env jbang "$0" "$@" ; exit $?
+
 //JAVA 17+
+
+//RUNTIME_OPTIONS -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+
 //DEPS io.quarkus.platform:quarkus-bom:3.15.1@pom
 //DEPS io.quarkus:quarkus-picocli
 //DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.15.0
-//RUNTIME_OPTIONS -Djava.util.logging.manager=org.jboss.logmanager.LogManager
+
+//Q:CONFIG app.greeting.message=Hello
+
 //Q:CONFIG quarkus.banner.enabled=false
 //Q:CONFIG quarkus.log.level=WARN
 //Q:CONFIG quarkus.log.min-level=TRACE
@@ -17,11 +23,13 @@ import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
 import java.util.logging.Logger;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @Command(name = "pg-ssh-config", mixinStandardHelpOptions = true)
 public class PgSshConfigurer implements Runnable {
@@ -34,59 +42,100 @@ public class PgSshConfigurer implements Runnable {
     @Inject
     ConfigFileManager configFileManager;
 
+    @ConfigProperty(name = "app.greeting.message")
+    String greetingMessage;
+
+    @Option(
+        names = "--ssh-host",
+        description = "SSH host address",
+        defaultValue = "localhost"
+    )
+    String sshHost;
+
+    @Option(
+        names = "--ssh-port",
+        description = "SSH port number (1-65535)",
+        defaultValue = "2223"
+    )
+    int sshPort;
+
+    @Option(
+        names = "--ssh-user",
+        description = "SSH username",
+        defaultValue = "demo"
+    )
+    String sshUsername;
+
+    @Option(
+        names = "--ssh-password",
+        description = "SSH password",
+        defaultValue = "demo",
+        interactive = true
+    )
+    String sshPassword;
+
+    @Option(
+        names = "--config-file",
+        description = "PostgreSQL configuration file path",
+        defaultValue = "/etc/postgresql/16/main/postgresql.conf"
+    )
+    String configFilePath;
+
     @Override
     public void run() {
         try {
+            LOG.info(greetingMessage);
+
             // 1. Print SSH connection details
             LOG.info("=== SSH Connection Details ===");
-            LOG.info("Host: localhost");
-            LOG.info("Port: 2223");
-            LOG.info("User: demo");
+            LOG.info("Host: " + sshHost);
+            LOG.info("Port: " + sshPort);
+            LOG.info("User: " + sshUsername);
             LOG.info("");
 
             // 2. Initialize SSH connection
-            sshManager.connect("localhost", 2223, "demo", "demo");
+            sshManager.connect(sshHost, sshPort, sshUsername, sshPassword);
             LOG.info("SSH connection established successfully");
             LOG.info("");
 
             // 3. Display target configuration file content
             LOG.info("=== Initial Configuration File ===");
-            configFileManager.viewFile("/etc/postgresql/16/main/postgresql.conf");
+            configFileManager.viewFile(configFilePath);
             LOG.info("");
 
             // 4. Verify a property exists
             LOG.info("=== Checking if property exists ===");
-            boolean exists = configFileManager.checkProperty("/etc/postgresql/16/main/postgresql.conf", 
+            boolean exists = configFileManager.checkProperty(configFilePath,
                 "listen_addresses");
             LOG.info("Property 'listen_addresses' exists: " + exists);
             LOG.info("");
 
             // 5. Update the property with a new value
             LOG.info("=== Updating property value ===");
-            configFileManager.setProperty("/etc/postgresql/16/main/postgresql.conf", 
+            configFileManager.setProperty(configFilePath,
                 "listen_addresses", "localhost");
             LOG.info("Property 'listen_addresses' updated to 'localhost'");
-            configFileManager.viewFile("/etc/postgresql/16/main/postgresql.conf");
+            configFileManager.viewFile(configFilePath);
             LOG.info("");
 
             // 6. Add a new property
             LOG.info("=== Adding new property ===");
-            configFileManager.addProperty("/etc/postgresql/16/main/postgresql.conf", 
+            configFileManager.addProperty(configFilePath,
                 "max_connections", "200");
             LOG.info("Property 'max_connections' added with value '200'");
-            configFileManager.viewFile("/etc/postgresql/16/main/postgresql.conf");
+            configFileManager.viewFile(configFilePath);
             LOG.info("");
 
             // 7. Remove a property
             LOG.info("=== Removing property ===");
-            configFileManager.removeProperty("/etc/postgresql/16/main/postgresql.conf", 
+            configFileManager.removeProperty(configFilePath,
                 "max_connections");
             LOG.info("Property 'max_connections' removed");
             LOG.info("");
 
             // 8. Print final configuration state
             LOG.info("=== Final Configuration State ===");
-            configFileManager.viewFile("/etc/postgresql/16/main/postgresql.conf");
+            configFileManager.viewFile(configFilePath);
 
             // 9. Demonstrate systemd service management
             LOG.info("=== Restarting Demo Service ===");
