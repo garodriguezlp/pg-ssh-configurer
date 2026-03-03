@@ -95,17 +95,29 @@ public class PgSshConfigurer implements Runnable {
     @Override
     public void run() {
         try {
+            SshConnectionConfig sshConfig = new SshConnectionConfig(
+                sshHost,
+                sshPort,
+                sshUsername,
+                sshPassword
+            );
+
             LOG.info(greetingMessage);
 
             // 1. Print SSH connection details
             LOG.info("=== SSH Connection Details ===");
-            LOG.info("Host: " + sshHost);
-            LOG.info("Port: " + sshPort);
-            LOG.info("User: " + sshUsername);
+            LOG.info("Host: " + sshConfig.host());
+            LOG.info("Port: " + sshConfig.port());
+            LOG.info("User: " + sshConfig.username());
             LOG.info("");
 
             // 2. Initialize SSH connection
-            sshManager.connect(sshHost, sshPort, sshUsername, sshPassword);
+            sshManager.connect(
+                sshConfig.host(),
+                sshConfig.port(),
+                sshConfig.username(),
+                sshConfig.password()
+            );
             LOG.info("SSH connection established successfully");
             LOG.info("");
 
@@ -162,6 +174,13 @@ public class PgSshConfigurer implements Runnable {
         }
     }
 }
+
+record SshConnectionConfig(
+    String host,
+    int port,
+    String username,
+    String password
+) {}
 
 @ApplicationScoped
 class SshManager {
