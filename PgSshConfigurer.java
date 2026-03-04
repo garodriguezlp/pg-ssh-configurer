@@ -269,8 +269,15 @@ class ConfigFileManager {
      * Read file contents and return as a string
      */
     public String readFile(String filePath) throws IOException {
-        String content = sshManager.executeSudoCommand("cat " + filePath);
-        return content;
+        LOG.info("[READ_FILE] Reading file: " + filePath);
+        try {
+            String content = sshManager.executeSudoCommand("cat " + filePath);
+            LOG.info("[READ_FILE_SUCCESS] File read successfully, length: " + content.length() + " bytes");
+            return content;
+        } catch (IOException e) {
+            LOG.severe("[READ_FILE_ERROR] Failed to read file: " + e.getMessage());
+            throw e;
+        }
     }
 
     /**
@@ -278,121 +285,78 @@ class ConfigFileManager {
      * Returns a result indicating the action taken (updated, added, or unchanged)
      */
     public PropertyReconciliationResult reconcileProperty(String filePath, String propertyName, String value) throws IOException {
-        // Check if property already exists
-        if (propertyExists(filePath, propertyName)) {
-            // Property exists, check if value is already set
-            String currentValue = getPropertyValue(filePath, propertyName);
-            if (currentValue != null && currentValue.equals(value)) {
-                return new PropertyReconciliationResult("unchanged");
-            }
-            // Update the property
-            updateProperty(filePath, propertyName, value);
-            return new PropertyReconciliationResult("updated");
-        } else {
-            // Property doesn't exist, add it
-            addProperty(filePath, propertyName, value);
-            return new PropertyReconciliationResult("added");
+        LOG.info("[RECONCILE_START] ===== RECONCILING PROPERTY =====");
+        LOG.info("[RECONCILE_START] Property name: " + propertyName);
+        LOG.info("[RECONCILE_START] Desired value: " + value);
+        LOG.info("[RECONCILE_START] File path: " + filePath);
+        
+        // Get current value to determine if this will be an add, update, or no-op
+        String currentValue = getPropertyValue(filePath, propertyName);
+        LOG.info("[RECONCILE_CHECK] Current value: " + (currentValue == null ? "NOT_FOUND" : currentValue));
+        
+        // If value already matches, no action needed
+        if (currentValue != null && currentValue.equals(value)) {
+            LOG.info("[RECONCILE_DECISION] Property already has correct value - NO CHANGE");
+            LOG.info("[RECONCILE_END] ===== RECONCILIATION COMPLETE (unchanged) =====");
+            return new PropertyReconciliationResult("unchanged");
         }
-    }
-
-    /**
-     * Check if a property exists (returns true/false)
-     */
-    public boolean propertyExists(String filePath, String propertyName) throws IOException {
+        
+        // Determine action: 'added' if property doesn't exist, 'updated' if it does
+        String action = currentValue == null ? "added" : "updated";
+        LOG.info("[RECONCILE_DECISION] Action to perform: " + action);
+        
+        // Step 1: Remove any existing line with this property (using sed -i deletion)
+        LOG.info("[RECONCILE_REMOVE] Removing any existing line for property: " + propertyName);
         try {
-            String command = String.format("grep -q '^%s\\s*=' %s", propertyName, filePath);
-            sshManager.executeSudoCommand(command);
-            return true;
+            String sedRemoveCommand = String.format("sed -i '/^%s\\s*=/d' %s", propertyName, filePath);
+            LOG.fine("[RECONCILE_REMOVE_CMD] Executing: " + sedRemoveCommand);
+            sshManager.executeSudoCommand(sedRemoveCommand);
+            LOG.info("[RECONCILE_REMOVE_SUCCESS] Line removed or was not present");
         } catch (IOException e) {
-            // grep returns non-zero if pattern not found
-            if (e.getMessage().contains("exit code 1")) {
-                return false;
-            }
+            LOG.severe("[RECONCILE_REMOVE_ERROR] Failed to remove property line: " + e.getMessage());
             throw e;
         }
+        
+        // Step 2: Append the new property value
+        LOG.info("[RECONCILE_ADD] Adding/appending property: " + propertyName + " = " + value);
+        try {
+            String echoCommand = String.format("echo '%s = %s' | tee -a %s > /dev/null", propertyName, value, filePath);
+            LOG.fine("[RECONCILE_ADD_CMD] Executing: " + echoCommand);
+            sshManager.executeSudoCommand(echoCommand);
+            LOG.info("[RECONCILE_ADD_SUCCESS] Property added successfully");
+        } catch (IOException e) {
+            LOG.severe("[RECONCILE_ADD_ERROR] Failed to add property: " + e.getMessage());
+            throw e;
+        }
+        
+        // Verify the property was set correctly
+        LOG.info("[RECONCILE_VERIFY] Verifying property was set correctly");
+        String verifyValue = getPropertyValue(filePath, propertyName);
+        LOG.info("[RECONCILE_VERIFY_RESULT] Verification - property now has value: " + (verifyValue == null ? "NOT_FOUND" : verifyValue));
+        if (verifyValue == null || !verifyValue.equals(value)) {
+            LOG.warning("[RECONCILE_VERIFY_FAILED] Property verification failed! Expected: " + value + ", Got: " + verifyValue);
+        }
+        
+        LOG.info("[RECONCILE_END] ===== RECONCILIATION COMPLETE (" + action + ") =====");
+        return new PropertyReconciliationResult(action);
     }
 
     /**
      * Get the current value of a property
      */
     public String getPropertyValue(String filePath, String propertyName) throws IOException {
+        LOG.fine("[GET_VALUE] Retrieving value for property: " + propertyName);
         try {
             String command = String.format("grep '^%s\\s*=' %s | sed 's/^%s\\s*=\\s*//' | head -1", 
                 propertyName, filePath, propertyName);
+            LOG.fine("[GET_VALUE_CMD] Executing: " + command);
             String result = sshManager.executeSudoCommand(command).trim();
+            String resultDisplay = result.isEmpty() ? "EMPTY/NOT_FOUND" : result;
+            LOG.fine("[GET_VALUE_RESULT] Property [" + propertyName + "] = [" + resultDisplay + "]");
             return result.isEmpty() ? null : result;
         } catch (IOException e) {
-            LOG.fine("Could not get property value: " + e.getMessage());
+            LOG.warning("[GET_VALUE_ERROR] Failed to get property value for [" + propertyName + "]: " + e.getMessage());
             return null;
         }
-    }
-
-    /**
-     * Update an existing property value
-     */
-    public void updateProperty(String filePath, String propertyName, String value) throws IOException {
-        // Use sed to replace the property value (handles quoted and unquoted values)
-        String sedCommand = String.format(
-            "sed -i \"s/^%s\\s*=.*/%s = %s/\" %s",
-            propertyName, propertyName, value, filePath
-        );
-        sshManager.executeSudoCommand(sedCommand);
-        LOG.fine("Property '" + propertyName + "' updated to '" + value + "'");
-    }
-
-    /**
-     * Add a new property to the file (or update if it exists)
-     */
-    public void addProperty(String filePath, String propertyName, String value) throws IOException {
-        // Check if property already exists
-        if (propertyExists(filePath, propertyName)) {
-            LOG.fine("Property '" + propertyName + "' already exists, updating instead");
-            updateProperty(filePath, propertyName, value);
-        } else {
-            // Append the property to the file using tee -a for sudo access
-            String echoCommand = String.format(
-                "echo '%s = %s' | tee -a %s > /dev/null",
-                propertyName, value, filePath
-            );
-            sshManager.executeSudoCommand(echoCommand);
-            LOG.fine("Property '" + propertyName + "' added with value '" + value + "'");
-        }
-    }
-
-    /**
-     * Remove a property from the file
-     */
-    public void removeProperty(String filePath, String propertyName) throws IOException {
-        // Use sed to remove lines that match the property
-        String sedCommand = String.format(
-            "sed -i '/^%s\\s*=/d' %s",
-            propertyName, filePath
-        );
-        sshManager.executeSudoCommand(sedCommand);
-        LOG.fine("Property '" + propertyName + "' removed");
-    }
-
-    /**
-     * Legacy method: Display file with header/footer for backward compatibility
-     */
-    public void viewFile(String filePath) throws IOException {
-        LOG.info("--- File: " + filePath + " ---");
-        String content = sshManager.executeSudoCommand("cat " + filePath);
-        LOG.info(content);
-        LOG.info("--- End of file ---");
-    }
-
-    /**
-     * Legacy method: Check property existence for backward compatibility
-     */
-    public boolean checkProperty(String filePath, String propertyName) throws IOException {
-        return propertyExists(filePath, propertyName);
-    }
-
-    /**
-     * Legacy method: Set property for backward compatibility
-     */
-    public void setProperty(String filePath, String propertyName, String value) throws IOException {
-        updateProperty(filePath, propertyName, value);
     }
 }
