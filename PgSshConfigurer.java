@@ -9,16 +9,14 @@
 //DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.15.0
 //FILES .pg-ssh-config.properties
 
-//Q:CONFIG app.greeting.message=Hello
-
 //Q:CONFIG quarkus.banner.enabled=false
-//Q:CONFIG quarkus.log.level=WARN
+//Q:CONFIG quarkus.log.level=ERROR
 //Q:CONFIG quarkus.log.min-level=TRACE
 //Q:CONFIG quarkus.log.console.level=TRACE
 //Q:CONFIG quarkus.log.console.format=%d{HH:mm:ss.SSS} %-5p [%c{1.}] (%t) %m%n
-//Q:CONFIG quarkus.log.category."PgSshConfigurer".level=INFO
-//Q:CONFIG quarkus.log.category."SshManager".level=INFO
-//Q:CONFIG quarkus.log.category."ConfigFileManager".level=INFO
+//Q:CONFIG quarkus.log.category."pgsshconfig".level=DEBUG
+
+package pgsshconfig;
 
 import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
@@ -31,6 +29,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
 import java.util.logging.Logger;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 @Command(
@@ -44,9 +44,6 @@ public class PgSshConfigurer implements Runnable {
 
     @Inject
     ConfigurationOrchestrationService orchestrationService;
-
-    @ConfigProperty(name = "app.greeting.message")
-    String greetingMessage;
 
     @Option(
         names = "--ssh-host",
@@ -89,6 +86,23 @@ public class PgSshConfigurer implements Runnable {
     )
     String configFilePath;
 
+    @Option(
+        names = "--set",
+        description = "PostgreSQL config settings (key=value pairs separated by semicolons)",
+        descriptionKey = "set",
+        split = ";",
+        splitSynopsisLabel = ";"
+    )
+    Map<String, String> desiredProperties = new LinkedHashMap<>();
+
+    @Option(
+        names = "--service",
+        description = "Service name to restart after configuration changes",
+        descriptionKey = "service",
+        defaultValue = "demo-service"
+    )
+    String targetService;
+
     @Override
     public void run() {
         try {
@@ -96,13 +110,15 @@ public class PgSshConfigurer implements Runnable {
                 sshHost,
                 sshPort,
                 sshUsername,
-                sshPassword
+                sshPassword,
+                configFilePath,
+                desiredProperties,
+                targetService
             );
 
-            LOG.info(greetingMessage);
-            orchestrationService.orchestrate(sshConfig, configFilePath);
+            orchestrationService.orchestrate(sshConfig);
 
-        } catch (Exception e) {
+        } catch (IOException e) {
             LOG.severe("Error during execution: " + e.getMessage());
             e.printStackTrace();
             System.exit(1);
@@ -114,12 +130,15 @@ record SshConnectionConfig(
     String host,
     int port,
     String username,
-    String password
+    String password,
+    String configFilePath,
+    Map<String, String> desiredProperties,
+    String targetService
 ) {}
 
 @ApplicationScoped
 class ConfigurationOrchestrationService {
-    private static final Logger LOG = Logger.getLogger(PgSshConfigurer.class.getName());
+    private static final Logger LOG = Logger.getLogger(ConfigurationOrchestrationService.class.getName());
 
     @Inject
     SshManager sshManager;
@@ -127,73 +146,57 @@ class ConfigurationOrchestrationService {
     @Inject
     ConfigFileManager configFileManager;
 
-    public void orchestrate(SshConnectionConfig sshConfig, String configFilePath) throws IOException {
+    public void orchestrate(SshConnectionConfig sshConfig) throws IOException {
         try {
-            // 1. Print SSH connection details
-            LOG.info("=== SSH Connection Details ===");
-            LOG.info("Host: " + sshConfig.host());
-            LOG.info("Port: " + sshConfig.port());
-            LOG.info("User: " + sshConfig.username());
-            LOG.info("");
+            // 1. Print Configuration
+            LOG.info("Configuration: ssh.host=" + sshConfig.host() + 
+                ", ssh.port=" + sshConfig.port() + 
+                ", config.file=" + sshConfig.configFilePath() + 
+                ", desired.properties=" + sshConfig.desiredProperties().size());
 
-            // 2. Initialize SSH connection
+            // 2. Connect SSH
+            LOG.info("Connecting to SSH server at " + sshConfig.host() + ":" + sshConfig.port() + 
+                " as user " + sshConfig.username() + "...");
             sshManager.connect(
                 sshConfig.host(),
                 sshConfig.port(),
                 sshConfig.username(),
                 sshConfig.password()
             );
-            LOG.info("SSH connection established successfully");
-            LOG.info("");
 
-            // 3. Display target configuration file content
-            LOG.info("=== Initial Configuration File ===");
-            configFileManager.viewFile(configFilePath);
-            LOG.info("");
+            // 3. Show Original File
+            LOG.info("Reading current config from " + sshConfig.configFilePath());
+            String originalContent = configFileManager.readFile(sshConfig.configFilePath());
+            LOG.info(originalContent);
 
-            // 4. Verify a property exists
-            LOG.info("=== Checking if property exists ===");
-            boolean exists = configFileManager.checkProperty(configFilePath,
-                "listen_addresses");
-            LOG.info("Property 'listen_addresses' exists: " + exists);
-            LOG.info("");
+            // 4. Reconcile Properties
+            for (Map.Entry<String, String> entry : sshConfig.desiredProperties().entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue();
+                
+                PropertyReconciliationResult result = 
+                    configFileManager.reconcileProperty(sshConfig.configFilePath(), key, value);
+                
+                LOG.info("set " + key + "=" + value + " (" + result.action() + ")");
+            }
 
-            // 5. Update the property with a new value
-            LOG.info("=== Updating property value ===");
-            configFileManager.setProperty(configFilePath,
-                "listen_addresses", "localhost");
-            LOG.info("Property 'listen_addresses' updated to 'localhost'");
-            configFileManager.viewFile(configFilePath);
-            LOG.info("");
+            // 5. Show Updated File
+            LOG.info("Final config from " + sshConfig.configFilePath());
+            String updatedContent = configFileManager.readFile(sshConfig.configFilePath());
+            LOG.info(updatedContent);
 
-            // 6. Add a new property
-            LOG.info("=== Adding new property ===");
-            configFileManager.addProperty(configFilePath,
-                "max_connections", "200");
-            LOG.info("Property 'max_connections' added with value '200'");
-            configFileManager.viewFile(configFilePath);
-            LOG.info("");
+            // 6. Restart Service
+            LOG.info("Restarting service: " + sshConfig.targetService());
+            sshManager.restartService(sshConfig.targetService());
+            LOG.info("Service restarted: " + sshConfig.targetService());
 
-            // 7. Remove a property
-            LOG.info("=== Removing property ===");
-            configFileManager.removeProperty(configFilePath,
-                "max_connections");
-            LOG.info("Property 'max_connections' removed");
-            LOG.info("");
-
-            // 8. Print final configuration state
-            LOG.info("=== Final Configuration State ===");
-            configFileManager.viewFile(configFilePath);
-
-            // 9. Demonstrate systemd service management
-            LOG.info("=== Restarting Demo Service ===");
-            sshManager.restartService("demo-service");
-            LOG.info("Demo service restarted successfully");
         } finally {
             sshManager.disconnect();
         }
     }
 }
+
+record PropertyReconciliationResult(String action) {}
 
 @ApplicationScoped
 class SshManager {
@@ -262,14 +265,40 @@ class ConfigFileManager {
     @Inject
     SshManager sshManager;
 
-    public void viewFile(String filePath) throws IOException {
-        LOG.info("--- File: " + filePath + " ---");
+    /**
+     * Read file contents and return as a string
+     */
+    public String readFile(String filePath) throws IOException {
         String content = sshManager.executeSudoCommand("cat " + filePath);
-        LOG.info(content);
-        LOG.info("--- End of file ---");
+        return content;
     }
 
-    public boolean checkProperty(String filePath, String propertyName) throws IOException {
+    /**
+     * Reconcile a property: update if exists, add if doesn't exist
+     * Returns a result indicating the action taken (updated, added, or unchanged)
+     */
+    public PropertyReconciliationResult reconcileProperty(String filePath, String propertyName, String value) throws IOException {
+        // Check if property already exists
+        if (propertyExists(filePath, propertyName)) {
+            // Property exists, check if value is already set
+            String currentValue = getPropertyValue(filePath, propertyName);
+            if (currentValue != null && currentValue.equals(value)) {
+                return new PropertyReconciliationResult("unchanged");
+            }
+            // Update the property
+            updateProperty(filePath, propertyName, value);
+            return new PropertyReconciliationResult("updated");
+        } else {
+            // Property doesn't exist, add it
+            addProperty(filePath, propertyName, value);
+            return new PropertyReconciliationResult("added");
+        }
+    }
+
+    /**
+     * Check if a property exists (returns true/false)
+     */
+    public boolean propertyExists(String filePath, String propertyName) throws IOException {
         try {
             String command = String.format("grep -q '^%s\\s*=' %s", propertyName, filePath);
             sshManager.executeSudoCommand(command);
@@ -283,21 +312,42 @@ class ConfigFileManager {
         }
     }
 
-    public void setProperty(String filePath, String propertyName, String value) throws IOException {
-        // Use sed to replace the property value
+    /**
+     * Get the current value of a property
+     */
+    public String getPropertyValue(String filePath, String propertyName) throws IOException {
+        try {
+            String command = String.format("grep '^%s\\s*=' %s | sed 's/^%s\\s*=\\s*//' | head -1", 
+                propertyName, filePath, propertyName);
+            String result = sshManager.executeSudoCommand(command).trim();
+            return result.isEmpty() ? null : result;
+        } catch (IOException e) {
+            LOG.fine("Could not get property value: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Update an existing property value
+     */
+    public void updateProperty(String filePath, String propertyName, String value) throws IOException {
+        // Use sed to replace the property value (handles quoted and unquoted values)
         String sedCommand = String.format(
             "sed -i \"s/^%s\\s*=.*/%s = %s/\" %s",
             propertyName, propertyName, value, filePath
         );
         sshManager.executeSudoCommand(sedCommand);
-        LOG.fine("Property '" + propertyName + "' set to '" + value + "'");
+        LOG.fine("Property '" + propertyName + "' updated to '" + value + "'");
     }
 
+    /**
+     * Add a new property to the file (or update if it exists)
+     */
     public void addProperty(String filePath, String propertyName, String value) throws IOException {
         // Check if property already exists
-        if (checkProperty(filePath, propertyName)) {
-            LOG.info("Property '" + propertyName + "' already exists, updating instead");
-            setProperty(filePath, propertyName, value);
+        if (propertyExists(filePath, propertyName)) {
+            LOG.fine("Property '" + propertyName + "' already exists, updating instead");
+            updateProperty(filePath, propertyName, value);
         } else {
             // Append the property to the file using tee -a for sudo access
             String echoCommand = String.format(
@@ -309,6 +359,9 @@ class ConfigFileManager {
         }
     }
 
+    /**
+     * Remove a property from the file
+     */
     public void removeProperty(String filePath, String propertyName) throws IOException {
         // Use sed to remove lines that match the property
         String sedCommand = String.format(
@@ -317,5 +370,29 @@ class ConfigFileManager {
         );
         sshManager.executeSudoCommand(sedCommand);
         LOG.fine("Property '" + propertyName + "' removed");
+    }
+
+    /**
+     * Legacy method: Display file with header/footer for backward compatibility
+     */
+    public void viewFile(String filePath) throws IOException {
+        LOG.info("--- File: " + filePath + " ---");
+        String content = sshManager.executeSudoCommand("cat " + filePath);
+        LOG.info(content);
+        LOG.info("--- End of file ---");
+    }
+
+    /**
+     * Legacy method: Check property existence for backward compatibility
+     */
+    public boolean checkProperty(String filePath, String propertyName) throws IOException {
+        return propertyExists(filePath, propertyName);
+    }
+
+    /**
+     * Legacy method: Set property for backward compatibility
+     */
+    public void setProperty(String filePath, String propertyName, String value) throws IOException {
+        updateProperty(filePath, propertyName, value);
     }
 }
