@@ -20,6 +20,9 @@
 package pgsshconfig;
 
 import org.apache.camel.ProducerTemplate;
+import org.apache.camel.CamelContext;
+import io.quarkus.runtime.QuarkusApplication;
+import io.quarkus.runtime.annotations.QuarkusMain;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -42,12 +45,16 @@ import java.util.stream.Stream;
     defaultValueProvider = PropertiesDefaultProvider.class,
     mixinStandardHelpOptions = true
 )
-public class pg_ssh_configurer implements Runnable {
+@QuarkusMain
+public class pg_ssh_configurer implements QuarkusApplication, Runnable {
 
     private static final Logger LOG = Logger.getLogger(pg_ssh_configurer.class.getName());
 
     @Inject
     ConfigurationOrchestrationService orchestrationService;
+
+    @Inject
+    CommandLine.IFactory factory;
 
     @Option(
         names = "--ssh-host",
@@ -113,6 +120,11 @@ public class pg_ssh_configurer implements Runnable {
         defaultValue = "false"
     )
     boolean verbose;
+
+    @Override
+    public int run(String... args) {
+        return new CommandLine(this, factory).execute(args);
+    }
 
     @Override
     public void run() {
@@ -269,6 +281,9 @@ class SshManager {
 
     @Inject
     ProducerTemplate producerTemplate;
+
+    @Inject
+    CamelContext camelContext;
     
     private String sshEndpoint;
     private String password;
@@ -278,13 +293,21 @@ class SshManager {
         this.password = password;
         this.sshEndpoint = String.format("ssh:%s@%s:%d?password=RAW(%s)&timeout=30000", 
             username, host, port, password);
+
+        try {
+            if (camelContext.getStatus().isStopped()) {
+                camelContext.start();
+            }
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to initialize Camel context", e);
+        }
+
         LOG.fine("SSH endpoint configured: ssh:" + username + "@" + host + ":" + port);
     }
 
     public String executeCommand(String command) throws IOException {
-        if (sshEndpoint == null) {
-            throw new IllegalStateException("SSH not connected");
-        }
+        ensureReadyForCommandExecution();
+        Objects.requireNonNull(command, "Command must not be null");
 
         try {
             // Send command to SSH endpoint and get result
@@ -311,6 +334,15 @@ class SshManager {
         String command = "systemctl restart " + serviceName;
         executeSudoCommand(command);
         LOG.fine("Service " + serviceName + " restarted successfully");
+    }
+
+    private void ensureReadyForCommandExecution() {
+        if (sshEndpoint == null || sshEndpoint.isBlank()) {
+            throw new IllegalStateException("SSH session is not initialized");
+        }
+        if (camelContext.getStatus().isStopped()) {
+            throw new IllegalStateException("Camel context is not running");
+        }
     }
 }
 
