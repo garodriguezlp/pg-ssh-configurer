@@ -212,9 +212,9 @@ class ConfigurationOrchestrationService {
     private void reconcileDesiredProperties(PgConfigChangeRequest pgConfigRequest) {
         pgConfigRequest.desiredProperties().entrySet().stream().forEach(entry -> {
             try {
-                PropertyReconciliationResult result =
+                boolean success =
                     configFileManager.reconcileProperty(pgConfigRequest.configFilePath(), entry.getKey(), entry.getValue());
-                executionReporter.printReconciliationResult(entry.getKey(), entry.getValue(), result);
+                executionReporter.printReconciliationResult(entry.getKey(), entry.getValue(), success);
             } catch (IOException e) {
                 throw new RuntimeException("Failed to reconcile property '" + entry.getKey() + "': " + e.getMessage(), e);
             }
@@ -226,8 +226,6 @@ class ConfigurationOrchestrationService {
         LOG.info("Service restarted: " + serviceName);
     }
 }
-
-record PropertyReconciliationResult(String action) {}
 
 @ApplicationScoped
 class ExecutionReporter {
@@ -260,8 +258,8 @@ class ExecutionReporter {
         LOG.info("--- End " + title + " ---");
     }
 
-    public void printReconciliationResult(String key, String value, PropertyReconciliationResult result) {
-        LOG.info("set " + key + "=" + value + " (" + result.action() + ")");
+    public void printReconciliationResult(String key, String value, boolean success) {
+        LOG.info("set " + key + "=" + value + " (" + (success ? "ok" : "failed") + ")");
     }
 }
 
@@ -333,58 +331,30 @@ class ConfigFileManager {
     }
 
     /**
-     * Reconcile a property by removing existing declaration(s) and appending the desired one.
-     * Returns a result indicating if the property was added or updated.
+     * Reconcile a property in a single remote SSH command.
+     * It removes any previous declaration(s) and appends the desired one.
      */
-    public PropertyReconciliationResult reconcileProperty(String filePath, String propertyName, String value) throws IOException {
+    public boolean reconcileProperty(String filePath, String propertyName, String value) throws IOException {
         LOG.info("Reconciling property '" + propertyName + "' to " + value + " in " + filePath);
-        boolean existed = propertyExists(filePath, propertyName);
-        setProperty(filePath, propertyName, value);
-        return new PropertyReconciliationResult(existed ? "updated" : "added");
-    }
-
-    /**
-     * Check if a property exists (returns true/false)
-     */
-    public boolean propertyExists(String filePath, String propertyName) throws IOException {
-        LOG.fine("Checking if property '" + propertyName + "' exists in " + filePath);
-        try {
-            String command = String.format(
-                "grep -q '^%s[[:space:]]*=' '%s'",
-                escapeRegex(propertyName),
-                escapeSingleQuote(filePath)
-            );
-            sshManager.executeSudoCommand(command);
-            return true;
-        } catch (IOException e) {
-            if (e.getMessage().contains("exit code 1")) {
-                return false;
-            }
-            throw e;
-        }
-    }
-
-    public void setProperty(String filePath, String propertyName, String value) throws IOException {
         String escapedRegexProperty = escapeRegex(propertyName);
         String escapedFilePath = escapeSingleQuote(filePath);
         String configLine = propertyName + " = " + value;
 
-        LOG.fine("Removing existing declarations of '" + propertyName + "' from " + filePath);
-        String deleteCommand = String.format(
-            "sed -i '/^%s[[:space:]]*=/d' '%s'",
+        String reconcileCommand = String.format(
+            "tmp=\\$(mktemp) && " +
+            "sed '/^%s[[:space:]]*=/d' '%s' > \\\"\\$tmp\\\" && " +
+            "printf '%%s\\n' '%s' >> \\\"\\$tmp\\\" && " +
+            "cat \\\"\\$tmp\\\" > '%s' && " +
+            "rm -f \\\"\\$tmp\\\"",
             escapedRegexProperty,
-            escapedFilePath
-        );
-        sshManager.executeSudoCommand(deleteCommand);
-
-        LOG.fine("Appending new property declaration to " + filePath);
-        String appendCommand = String.format(
-            "printf '%%s\\n' '%s' | tee -a '%s' > /dev/null",
+            escapedFilePath,
             escapeSingleQuote(configLine),
             escapedFilePath
         );
-        sshManager.executeSudoCommand(appendCommand);
+
+        sshManager.executeSudoCommand(reconcileCommand);
         LOG.fine("Property '" + propertyName + "' set to '" + value + "'");
+        return true;
     }
 
     private String escapeRegex(String value) {
