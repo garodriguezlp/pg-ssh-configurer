@@ -14,7 +14,7 @@
 //Q:CONFIG quarkus.log.min-level=TRACE
 //Q:CONFIG quarkus.log.console.level=TRACE
 //Q:CONFIG quarkus.log.console.format=%d{HH:mm:ss.SSS} %-5p [%c{1.}] (%t) %m%n
-//Q:CONFIG quarkus.log.category."pgsshconfig".level=DEBUG
+//Q:CONFIG quarkus.log.category."pgsshconfig".level=INFO
 
 package pgsshconfig;
 
@@ -27,10 +27,14 @@ import picocli.CommandLine.PropertiesDefaultProvider;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import java.io.IOException;
+import java.util.logging.Level;
+import java.util.logging.LogManager;
 import java.util.logging.Logger;
 import java.util.Map;
 import java.util.LinkedHashMap;
+import java.util.Objects;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Command(
     name = "pg-ssh-config",
@@ -102,8 +106,20 @@ public class pg_ssh_configurer implements Runnable {
     )
     String targetService;
 
+    @Option(
+        names = {"-v", "--verbose"},
+        description = "Enable verbose logging",
+        defaultValue = "false"
+    )
+    boolean verbose;
+
     @Override
     public void run() {
+        // Dynamically configure logging level based on verbose flag
+        if (verbose) {
+            setLoggingLevel(Level.FINE);
+            LOG.info("Verbose logging enabled - FINE/DEBUG level");
+        }
         try {
             SshConnectionDetails sshConnection = new SshConnectionDetails(
                 sshHost,
@@ -126,6 +142,16 @@ public class pg_ssh_configurer implements Runnable {
             e.printStackTrace();
             System.exit(1);
         }
+    }
+
+    private void setLoggingLevel(Level level) {
+        LogManager logManager = LogManager.getLogManager();
+
+        // Loggers to configure for dynamic level changes
+        Stream.of("pgsshconfig")
+            .map(logManager::getLogger)
+            .filter(Objects::nonNull)
+            .forEach(logger -> logger.setLevel(level));
     }
 }
 
@@ -300,7 +326,7 @@ class ConfigFileManager {
      * Read file contents and return as a string
      */
     public String readFile(String filePath) throws IOException {
-        LOG.info("Reading file contents from: " + filePath);
+        LOG.fine("Reading file contents from: " + filePath);
         String content = sshManager.executeSudoCommand("cat " + filePath);
         return content;
     }
@@ -320,7 +346,7 @@ class ConfigFileManager {
      * Check if a property exists (returns true/false)
      */
     public boolean propertyExists(String filePath, String propertyName) throws IOException {
-        LOG.info("Checking if property '" + propertyName + "' exists in " + filePath);
+        LOG.fine("Checking if property '" + propertyName + "' exists in " + filePath);
         try {
             String command = String.format(
                 "grep -q '^%s[[:space:]]*=' '%s'",
@@ -342,7 +368,7 @@ class ConfigFileManager {
         String escapedFilePath = escapeSingleQuote(filePath);
         String configLine = propertyName + " = " + value;
 
-        LOG.info("Removing existing declarations of '" + propertyName + "' from " + filePath);
+        LOG.fine("Removing existing declarations of '" + propertyName + "' from " + filePath);
         String deleteCommand = String.format(
             "sed -i '/^%s[[:space:]]*=/d' '%s'",
             escapedRegexProperty,
@@ -350,7 +376,7 @@ class ConfigFileManager {
         );
         sshManager.executeSudoCommand(deleteCommand);
 
-        LOG.info("Appending new property declaration to " + filePath);
+        LOG.fine("Appending new property declaration to " + filePath);
         String appendCommand = String.format(
             "printf '%%s\\n' '%s' | tee -a '%s' > /dev/null",
             escapeSingleQuote(configLine),
