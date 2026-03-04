@@ -18,7 +18,6 @@
 
 package pgsshconfig;
 
-import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -31,7 +30,7 @@ import java.io.IOException;
 import java.util.logging.Logger;
 import java.util.Map;
 import java.util.LinkedHashMap;
-import org.eclipse.microprofile.config.inject.ConfigProperty;
+import java.util.stream.Collectors;
 
 @Command(
     name = "pg-ssh-config",
@@ -106,17 +105,21 @@ public class PgSshConfigurer implements Runnable {
     @Override
     public void run() {
         try {
-            SshConnectionConfig sshConfig = new SshConnectionConfig(
+            SshConnectionDetails sshConnection = new SshConnectionDetails(
                 sshHost,
                 sshPort,
                 sshUsername,
-                sshPassword,
+                sshPassword
+            );
+
+            PgConfigChangeRequest pgConfigRequest = new PgConfigChangeRequest(
                 configFilePath,
                 desiredProperties,
                 targetService
             );
 
-            orchestrationService.orchestrate(sshConfig);
+            ConfigurationRequest request = new ConfigurationRequest(sshConnection, pgConfigRequest);
+            orchestrationService.orchestrate(request);
 
         } catch (IOException e) {
             LOG.severe("Error during execution: " + e.getMessage());
@@ -126,14 +129,22 @@ public class PgSshConfigurer implements Runnable {
     }
 }
 
-record SshConnectionConfig(
+record SshConnectionDetails(
     String host,
     int port,
     String username,
-    String password,
+    String password
+) {}
+
+record PgConfigChangeRequest(
     String configFilePath,
     Map<String, String> desiredProperties,
     String targetService
+) {}
+
+record ConfigurationRequest(
+    SshConnectionDetails ssh,
+    PgConfigChangeRequest pgConfig
 ) {}
 
 @ApplicationScoped
@@ -146,75 +157,100 @@ class ConfigurationOrchestrationService {
     @Inject
     ConfigFileManager configFileManager;
 
-    public void orchestrate(SshConnectionConfig sshConfig) throws IOException {
-        try {
-            // 1. Print Configuration
-            LOG.info("Configuration: ssh.host=" + sshConfig.host() + 
-                ", ssh.port=" + sshConfig.port() + 
-                ", config.file=" + sshConfig.configFilePath() + 
-                ", desired.properties=" + sshConfig.desiredProperties().size());
+    @Inject
+    ExecutionReporter executionReporter;
 
-            // 2. Connect SSH
-            LOG.info("Connecting to SSH server at " + sshConfig.host() + ":" + sshConfig.port() + 
-                " as user " + sshConfig.username() + "...");
-            sshManager.connect(
-                sshConfig.host(),
-                sshConfig.port(),
-                sshConfig.username(),
-                sshConfig.password()
-            );
+    public void orchestrate(ConfigurationRequest request) throws IOException {
+        executionReporter.printConfiguration(request);
 
-            // 3. Show Original File
-            LOG.info("Reading current config from " + sshConfig.configFilePath());
-            String originalContent = configFileManager.readFile(sshConfig.configFilePath());
-            LOG.info(originalContent);
+        sshManager.initializeSession(
+            request.ssh().host(),
+            request.ssh().port(),
+            request.ssh().username(),
+            request.ssh().password()
+        );
 
-            // 4. Reconcile Properties
-            for (Map.Entry<String, String> entry : sshConfig.desiredProperties().entrySet()) {
-                String key = entry.getKey();
-                String value = entry.getValue();
-                
-                PropertyReconciliationResult result = 
-                    configFileManager.reconcileProperty(sshConfig.configFilePath(), key, value);
-                
-                LOG.info("set " + key + "=" + value + " (" + result.action() + ")");
+        showConfigFileSnapshot("Current config", request.pgConfig().configFilePath());
+        reconcileDesiredProperties(request.pgConfig());
+        showConfigFileSnapshot("Final config", request.pgConfig().configFilePath());
+        restartTargetService(request.pgConfig().targetService());
+    }
+
+    private void showConfigFileSnapshot(String title, String filePath) throws IOException {
+        String fileContent = configFileManager.readFile(filePath);
+        executionReporter.printFileSnapshot(title, filePath, fileContent);
+    }
+
+    private void reconcileDesiredProperties(PgConfigChangeRequest pgConfigRequest) {
+        pgConfigRequest.desiredProperties().entrySet().stream().forEach(entry -> {
+            try {
+                PropertyReconciliationResult result =
+                    configFileManager.reconcileProperty(pgConfigRequest.configFilePath(), entry.getKey(), entry.getValue());
+                executionReporter.printReconciliationResult(entry.getKey(), entry.getValue(), result);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to reconcile property '" + entry.getKey() + "': " + e.getMessage(), e);
             }
+        });
+    }
 
-            // 5. Show Updated File
-            LOG.info("Final config from " + sshConfig.configFilePath());
-            String updatedContent = configFileManager.readFile(sshConfig.configFilePath());
-            LOG.info(updatedContent);
-
-            // 6. Restart Service
-            LOG.info("Restarting service: " + sshConfig.targetService());
-            sshManager.restartService(sshConfig.targetService());
-            LOG.info("Service restarted: " + sshConfig.targetService());
-
-        } finally {
-            sshManager.disconnect();
-        }
+    private void restartTargetService(String serviceName) throws IOException {
+        sshManager.restartService(serviceName);
+        LOG.info("Service restarted: " + serviceName);
     }
 }
 
 record PropertyReconciliationResult(String action) {}
 
 @ApplicationScoped
+class ExecutionReporter {
+    private static final Logger LOG = Logger.getLogger(ExecutionReporter.class.getName());
+
+    public void printConfiguration(ConfigurationRequest request) {
+        String desiredProperties = request.pgConfig().desiredProperties().isEmpty()
+            ? "(none)"
+            : request.pgConfig().desiredProperties().entrySet().stream()
+                .map(entry -> "  - " + entry.getKey() + " = " + entry.getValue())
+                .collect(Collectors.joining("\n"));
+
+        String summary = String.join("\n",
+            "================ pg-ssh-config ================",
+            "SSH Host     : " + request.ssh().host(),
+            "SSH Port     : " + request.ssh().port(),
+            "SSH User     : " + request.ssh().username(),
+            "Config File  : " + request.pgConfig().configFilePath(),
+            "Target Svc   : " + request.pgConfig().targetService(),
+            "Properties   :",
+            desiredProperties,
+            "================================================"
+        );
+        // @todo; I need a breakline after the logger info so that the table appers in a new like it's like "\n" + summary. but make it professional
+        LOG.info(summary);
+    }
+
+    public void printFileSnapshot(String title, String filePath, String content) {
+        LOG.info("--- " + title + ": " + filePath + " ---");
+        LOG.info(content);
+        LOG.info("--- End " + title + " ---");
+    }
+
+    public void printReconciliationResult(String key, String value, PropertyReconciliationResult result) {
+        LOG.info("set " + key + "=" + value + " (" + result.action() + ")");
+    }
+}
+
+@ApplicationScoped
 class SshManager {
     private static final Logger LOG = Logger.getLogger(SshManager.class.getName());
-    
-    @Inject
-    CamelContext camelContext;
-    
+
     @Inject
     ProducerTemplate producerTemplate;
     
     private String sshEndpoint;
     private String password;
 
-    public void connect(String host, int port, String username, String password) throws IOException {
+    public void initializeSession(String host, int port, String username, String password) {
+        LOG.info("Connecting to SSH server at " + host + ":" + port + " as user " + username + "...");
         this.password = password;
-        // Build SSH endpoint URI for Apache Camel
-        // Format: ssh://username@host:port?certResource=&useFixedDelay=true&delay=5000&pollCommand=...
         this.sshEndpoint = String.format("ssh:%s@%s:%d?password=RAW(%s)&timeout=30000", 
             username, host, port, password);
         LOG.fine("SSH endpoint configured: ssh:" + username + "@" + host + ":" + port);
@@ -251,11 +287,6 @@ class SshManager {
         executeSudoCommand(command);
         LOG.fine("Service " + serviceName + " restarted successfully");
     }
-
-    public void disconnect() {
-        // Camel manages connections through its lifecycle, no explicit disconnect needed
-        LOG.fine("SSH connection closed (managed by Camel)");
-    }
 }
 
 @ApplicationScoped
@@ -269,94 +300,74 @@ class ConfigFileManager {
      * Read file contents and return as a string
      */
     public String readFile(String filePath) throws IOException {
-        LOG.info("[READ_FILE] Reading file: " + filePath);
-        try {
-            String content = sshManager.executeSudoCommand("cat " + filePath);
-            LOG.info("[READ_FILE_SUCCESS] File read successfully, length: " + content.length() + " bytes");
-            return content;
-        } catch (IOException e) {
-            LOG.severe("[READ_FILE_ERROR] Failed to read file: " + e.getMessage());
-            throw e;
-        }
+        String content = sshManager.executeSudoCommand("cat " + filePath);
+        return content;
     }
 
     /**
-     * Reconcile a property: update if exists, add if doesn't exist
-     * Returns a result indicating the action taken (updated, added, or unchanged)
+     * Reconcile a property by removing existing declaration(s) and appending the desired one.
+     * Returns a result indicating if the property was added or updated.
      */
     public PropertyReconciliationResult reconcileProperty(String filePath, String propertyName, String value) throws IOException {
-        LOG.info("[RECONCILE_START] ===== RECONCILING PROPERTY =====");
-        LOG.info("[RECONCILE_START] Property name: " + propertyName);
-        LOG.info("[RECONCILE_START] Desired value: " + value);
-        LOG.info("[RECONCILE_START] File path: " + filePath);
-        
-        // Get current value to determine if this will be an add, update, or no-op
-        String currentValue = getPropertyValue(filePath, propertyName);
-        LOG.info("[RECONCILE_CHECK] Current value: " + (currentValue == null ? "NOT_FOUND" : currentValue));
-        
-        // If value already matches, no action needed
-        if (currentValue != null && currentValue.equals(value)) {
-            LOG.info("[RECONCILE_DECISION] Property already has correct value - NO CHANGE");
-            LOG.info("[RECONCILE_END] ===== RECONCILIATION COMPLETE (unchanged) =====");
-            return new PropertyReconciliationResult("unchanged");
-        }
-        
-        // Determine action: 'added' if property doesn't exist, 'updated' if it does
-        String action = currentValue == null ? "added" : "updated";
-        LOG.info("[RECONCILE_DECISION] Action to perform: " + action);
-        
-        // Step 1: Remove any existing line with this property (using sed -i deletion)
-        LOG.info("[RECONCILE_REMOVE] Removing any existing line for property: " + propertyName);
-        try {
-            String sedRemoveCommand = String.format("sed -i '/^%s\\s*=/d' %s", propertyName, filePath);
-            LOG.fine("[RECONCILE_REMOVE_CMD] Executing: " + sedRemoveCommand);
-            sshManager.executeSudoCommand(sedRemoveCommand);
-            LOG.info("[RECONCILE_REMOVE_SUCCESS] Line removed or was not present");
-        } catch (IOException e) {
-            LOG.severe("[RECONCILE_REMOVE_ERROR] Failed to remove property line: " + e.getMessage());
-            throw e;
-        }
-        
-        // Step 2: Append the new property value
-        LOG.info("[RECONCILE_ADD] Adding/appending property: " + propertyName + " = " + value);
-        try {
-            String echoCommand = String.format("echo '%s = %s' | tee -a %s > /dev/null", propertyName, value, filePath);
-            LOG.fine("[RECONCILE_ADD_CMD] Executing: " + echoCommand);
-            sshManager.executeSudoCommand(echoCommand);
-            LOG.info("[RECONCILE_ADD_SUCCESS] Property added successfully");
-        } catch (IOException e) {
-            LOG.severe("[RECONCILE_ADD_ERROR] Failed to add property: " + e.getMessage());
-            throw e;
-        }
-        
-        // Verify the property was set correctly
-        LOG.info("[RECONCILE_VERIFY] Verifying property was set correctly");
-        String verifyValue = getPropertyValue(filePath, propertyName);
-        LOG.info("[RECONCILE_VERIFY_RESULT] Verification - property now has value: " + (verifyValue == null ? "NOT_FOUND" : verifyValue));
-        if (verifyValue == null || !verifyValue.equals(value)) {
-            LOG.warning("[RECONCILE_VERIFY_FAILED] Property verification failed! Expected: " + value + ", Got: " + verifyValue);
-        }
-        
-        LOG.info("[RECONCILE_END] ===== RECONCILIATION COMPLETE (" + action + ") =====");
-        return new PropertyReconciliationResult(action);
+        boolean existed = propertyExists(filePath, propertyName);
+        setProperty(filePath, propertyName, value);
+        return new PropertyReconciliationResult(existed ? "updated" : "added");
     }
 
     /**
-     * Get the current value of a property
+     * Check if a property exists (returns true/false)
      */
-    public String getPropertyValue(String filePath, String propertyName) throws IOException {
-        LOG.fine("[GET_VALUE] Retrieving value for property: " + propertyName);
+    public boolean propertyExists(String filePath, String propertyName) throws IOException {
         try {
-            String command = String.format("grep '^%s\\s*=' %s | sed 's/^%s\\s*=\\s*//' | head -1", 
-                propertyName, filePath, propertyName);
-            LOG.fine("[GET_VALUE_CMD] Executing: " + command);
-            String result = sshManager.executeSudoCommand(command).trim();
-            String resultDisplay = result.isEmpty() ? "EMPTY/NOT_FOUND" : result;
-            LOG.fine("[GET_VALUE_RESULT] Property [" + propertyName + "] = [" + resultDisplay + "]");
-            return result.isEmpty() ? null : result;
+            String command = String.format(
+                "grep -q '^%s[[:space:]]*=' '%s'",
+                escapeRegex(propertyName),
+                escapeSingleQuote(filePath)
+            );
+            sshManager.executeSudoCommand(command);
+            return true;
         } catch (IOException e) {
-            LOG.warning("[GET_VALUE_ERROR] Failed to get property value for [" + propertyName + "]: " + e.getMessage());
-            return null;
+            if (e.getMessage().contains("exit code 1")) {
+                return false;
+            }
+            throw e;
         }
+    }
+
+    public void setProperty(String filePath, String propertyName, String value) throws IOException {
+        String escapedRegexProperty = escapeRegex(propertyName);
+        String escapedFilePath = escapeSingleQuote(filePath);
+        String configLine = propertyName + " = " + value;
+
+        String deleteCommand = String.format(
+            "sed -i '/^%s[[:space:]]*=/d' '%s'",
+            escapedRegexProperty,
+            escapedFilePath
+        );
+        sshManager.executeSudoCommand(deleteCommand);
+
+        String appendCommand = String.format(
+            "printf '%%s\\n' '%s' | tee -a '%s' > /dev/null",
+            escapeSingleQuote(configLine),
+            escapedFilePath
+        );
+        sshManager.executeSudoCommand(appendCommand);
+        LOG.fine("Property '" + propertyName + "' set to '" + value + "'");
+    }
+
+    private String escapeRegex(String value) {
+        StringBuilder escaped = new StringBuilder();
+        String regexChars = "\\.^$|?*+()[]{}";
+        for (char current : value.toCharArray()) {
+            if (regexChars.indexOf(current) >= 0 || current == '/') {
+                escaped.append('\\');
+            }
+            escaped.append(current);
+        }
+        return escaped.toString();
+    }
+
+    private String escapeSingleQuote(String value) {
+        return value.replace("'", "'\"'\"'");
     }
 }
