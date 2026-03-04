@@ -4,10 +4,11 @@
 
 //RUNTIME_OPTIONS -Djava.util.logging.manager=org.jboss.logmanager.LogManager
 
-//DEPS io.quarkus.platform:quarkus-bom:3.15.1@pom
-//DEPS io.quarkus:quarkus-picocli
-//DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.15.0
 //FILES .pg-ssh-config.properties
+
+//DEPS io.quarkus.platform:quarkus-bom:3.32.1@pom
+//DEPS io.quarkus:quarkus-picocli
+//DEPS org.apache.camel.quarkus:camel-quarkus-ssh:3.32.0
 
 //Q:CONFIG quarkus.banner.enabled=false
 //Q:CONFIG quarkus.log.level=ERROR
