@@ -37,9 +37,9 @@ import java.util.stream.Collectors;
     defaultValueProvider = PropertiesDefaultProvider.class,
     mixinStandardHelpOptions = true
 )
-public class PgSshConfigurer implements Runnable {
+public class pg_ssh_configurer implements Runnable {
 
-    private static final Logger LOG = Logger.getLogger(PgSshConfigurer.class.getName());
+    private static final Logger LOG = Logger.getLogger(pg_ssh_configurer.class.getName());
 
     @Inject
     ConfigurationOrchestrationService orchestrationService;

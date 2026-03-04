@@ -60,7 +60,7 @@ service=demo-service
 ### 3. Run the Configurer
 
 ```bash
-jbang PgSshConfigurer.java
+jbang pg_ssh_configurer.java
 ```
 
 The application will:
