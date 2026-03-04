@@ -177,6 +177,7 @@ class ConfigurationOrchestrationService {
     }
 
     private void showConfigFileSnapshot(String title, String filePath) throws IOException {
+        LOG.info("Reading configuration file: " + filePath);
         String fileContent = configFileManager.readFile(filePath);
         executionReporter.printFileSnapshot(title, filePath, fileContent);
     }
@@ -223,13 +224,12 @@ class ExecutionReporter {
             desiredProperties,
             "================================================"
         );
-        // @todo; I need a breakline after the logger info so that the table appers in a new like it's like "\n" + summary. but make it professional
-        LOG.info(summary);
+        LOG.info(String.format("%n%s", summary));
     }
 
     public void printFileSnapshot(String title, String filePath, String content) {
         LOG.info("--- " + title + ": " + filePath + " ---");
-        LOG.info(content);
+        LOG.info(String.format("%n%s", content));
         LOG.info("--- End " + title + " ---");
     }
 
@@ -300,6 +300,7 @@ class ConfigFileManager {
      * Read file contents and return as a string
      */
     public String readFile(String filePath) throws IOException {
+        LOG.info("Reading file contents from: " + filePath);
         String content = sshManager.executeSudoCommand("cat " + filePath);
         return content;
     }
@@ -309,6 +310,7 @@ class ConfigFileManager {
      * Returns a result indicating if the property was added or updated.
      */
     public PropertyReconciliationResult reconcileProperty(String filePath, String propertyName, String value) throws IOException {
+        LOG.info("Reconciling property '" + propertyName + "' to " + value + " in " + filePath);
         boolean existed = propertyExists(filePath, propertyName);
         setProperty(filePath, propertyName, value);
         return new PropertyReconciliationResult(existed ? "updated" : "added");
@@ -318,6 +320,7 @@ class ConfigFileManager {
      * Check if a property exists (returns true/false)
      */
     public boolean propertyExists(String filePath, String propertyName) throws IOException {
+        LOG.info("Checking if property '" + propertyName + "' exists in " + filePath);
         try {
             String command = String.format(
                 "grep -q '^%s[[:space:]]*=' '%s'",
@@ -339,6 +342,7 @@ class ConfigFileManager {
         String escapedFilePath = escapeSingleQuote(filePath);
         String configLine = propertyName + " = " + value;
 
+        LOG.info("Removing existing declarations of '" + propertyName + "' from " + filePath);
         String deleteCommand = String.format(
             "sed -i '/^%s[[:space:]]*=/d' '%s'",
             escapedRegexProperty,
@@ -346,6 +350,7 @@ class ConfigFileManager {
         );
         sshManager.executeSudoCommand(deleteCommand);
 
+        LOG.info("Appending new property declaration to " + filePath);
         String appendCommand = String.format(
             "printf '%%s\\n' '%s' | tee -a '%s' > /dev/null",
             escapeSingleQuote(configLine),
